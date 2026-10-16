@@ -33,6 +33,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 # ===== DB Pool =====
 _pool = None
 
+
 async def get_pool():
     global _pool
     if _pool is None:
@@ -143,25 +144,26 @@ async def chat(request: Request):
         "X-Title": "Dark AI",
     }
 
-    async def stream():
-    async with httpx.AsyncClient(timeout=None) as client:
-        async with client.stream(
-            "POST",
-            "https://openrouter.ai/api/v1/chat/completions",
-            json=body,
-            headers=headers,
-        ) as resp:
-            print(f"[OPENROUTER] status={resp.status_code}")
-            if resp.status_code != 200:
-                error_body = await resp.aread()
-                print(f"[OPENROUTER ERROR] {error_body.decode('utf-8', errors='ignore')[:500]}")
-                yield f"data: {{\"error\": \"HTTP {resp.status_code}\"}}\n\n".encode()
-                yield b"data: [DONE]\n\n"
-                return
-            async for chunk in resp.aiter_bytes():
-                yield chunk
+    async def stream_response():
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream(
+                "POST",
+                "https://openrouter.ai/api/v1/chat/completions",
+                json=body,
+                headers=headers,
+            ) as resp:
+                print(f"[OPENROUTER] status={resp.status_code}")
+                if resp.status_code != 200:
+                    error_body = await resp.aread()
+                    print(f"[OPENROUTER ERROR] {error_body.decode('utf-8', errors='ignore')[:500]}")
+                    err_line = 'data: {"error": "HTTP ' + str(resp.status_code) + '"}\n\n'
+                    yield err_line.encode()
+                    yield b"data: [DONE]\n\n"
+                    return
+                async for chunk in resp.aiter_bytes():
+                    yield chunk
 
-    return StreamingResponse(stream(), media_type="text/event-stream")
+    return StreamingResponse(stream_response(), media_type="text/event-stream")
 
 
 # ===== OAuth =====
