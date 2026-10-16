@@ -144,15 +144,22 @@ async def chat(request: Request):
     }
 
     async def stream():
-        async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream(
-                "POST",
-                "https://openrouter.ai/api/v1/chat/completions",
-                json=body,
-                headers=headers,
-            ) as resp:
-                async for chunk in resp.aiter_bytes():
-                    yield chunk
+    async with httpx.AsyncClient(timeout=None) as client:
+        async with client.stream(
+            "POST",
+            "https://openrouter.ai/api/v1/chat/completions",
+            json=body,
+            headers=headers,
+        ) as resp:
+            print(f"[OPENROUTER] status={resp.status_code}")
+            if resp.status_code != 200:
+                error_body = await resp.aread()
+                print(f"[OPENROUTER ERROR] {error_body.decode('utf-8', errors='ignore')[:500]}")
+                yield f"data: {{\"error\": \"HTTP {resp.status_code}\"}}\n\n".encode()
+                yield b"data: [DONE]\n\n"
+                return
+            async for chunk in resp.aiter_bytes():
+                yield chunk
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 
