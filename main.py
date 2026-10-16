@@ -4,6 +4,7 @@ import secrets
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
+import asyncpg
 
 app = FastAPI()
 
@@ -27,11 +28,87 @@ GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "")
 GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "")
 
-# ===== In-memory stores =====
-users = {}
-sessions = {}
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
-# ===== Proxy =====
+# ===== DB Pool =====
+_pool = None
+
+async def get_pool():
+    global _pool
+    if _pool is None:
+        _pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
+    return _pool
+
+
+@app.on_event("startup")
+async def startup():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                email TEXT,
+                name TEXT,
+                picture TEXT,
+                provider TEXT,
+                created_at TIMESTAMP DEFAULT NOW(),
+                last_login TIMESTAMP DEFAULT NOW()
+            );
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                token TEXT PRIMARY KEY,
+                user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+        """)
+
+
+# ===== Helpers =====
+async def verify_token(token: str):
+    if not token:
+        return None
+    if token == APP_SECRET:
+        return {"role": "admin"}
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT user_id FROM sessions WHERE token = $1", token
+            )
+            if row:
+                return {"role": "user", "user_id": row["user_id"]}
+    except Exception:
+        pass
+    return None
+
+
+async def upsert_user(user_id, email, name, picture, provider):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO users (id, email, name, picture, provider)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (id) DO UPDATE SET
+                email = EXCLUDED.email,
+                name = EXCLUDED.name,
+                picture = EXCLUDED.picture,
+                last_login = NOW()
+        """, user_id, email, name, picture, provider)
+
+
+async def create_session(user_id):
+    token = secrets.token_urlsafe(32)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO sessions (token, user_id) VALUES ($1, $2)",
+            token, user_id
+        )
+    return token
+
+
+# ===== Routes =====
 @app.get("/")
 def root():
     return {"status": "ok", "service": "Dark AI Proxy"}
@@ -47,7 +124,8 @@ async def chat(request: Request):
     auth = request.headers.get("Authorization", "")
     token = auth.replace("Bearer ", "")
 
-    if APP_SECRET and token != APP_SECRET and token not in sessions:
+    user = await verify_token(token)
+    if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     body = await request.json()
@@ -144,16 +222,13 @@ async def google_callback(code: str):
         user = user_resp.json()
 
     user_id = f"google:{user.get('id')}"
-    users[user_id] = {
-        "id": user_id,
-        "email": user.get("email"),
-        "name": user.get("name"),
-        "picture": user.get("picture"),
-        "provider": "google",
-    }
+    email = user.get("email")
+    name = user.get("name")
+    picture = user.get("picture")
 
-    session_token = secrets.token_urlsafe(32)
-    sessions[session_token] = user_id
+    await upsert_user(user_id, email, name, picture, "google")
+    session_token = await create_session(user_id)
+
     return RedirectResponse(f"{APP_DEEP_LINK}?token={session_token}")
 
 
@@ -191,24 +266,56 @@ async def github_callback(code: str):
                 email = primary.get("email") if primary else None
 
     user_id = f"github:{user.get('id')}"
-    users[user_id] = {
-        "id": user_id,
-        "email": email,
-        "name": user.get("name") or user.get("login"),
-        "picture": user.get("avatar_url"),
-        "provider": "github",
-    }
+    name = user.get("name") or user.get("login")
+    picture = user.get("avatar_url")
 
-    session_token = secrets.token_urlsafe(32)
-    sessions[session_token] = user_id
+    await upsert_user(user_id, email, name, picture, "github")
+    session_token = await create_session(user_id)
+
     return RedirectResponse(f"{APP_DEEP_LINK}?token={session_token}")
 
 
 @app.get("/auth/me")
-def auth_me(request: Request):
+async def auth_me(request: Request):
     auth = request.headers.get("Authorization", "")
     token = auth.replace("Bearer ", "")
-    user_id = sessions.get(token)
-    if not user_id:
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT u.id, u.email, u.name, u.picture, u.provider,
+                   u.created_at, u.last_login
+            FROM users u
+            JOIN sessions s ON s.user_id = u.id
+            WHERE s.token = $1
+        """, token)
+
+    if not row:
         raise HTTPException(401, "Invalid session")
-    return users.get(user_id, {})
+
+    return {
+        "id": row["id"],
+        "email": row["email"],
+        "name": row["name"],
+        "picture": row["picture"],
+        "provider": row["provider"],
+        "created_at": str(row["created_at"]),
+        "last_login": str(row["last_login"]),
+    }
+
+
+@app.get("/auth/users")
+async def list_users(request: Request):
+    auth = request.headers.get("Authorization", "")
+    token = auth.replace("Bearer ", "")
+    if token != APP_SECRET:
+        raise HTTPException(403, "Admin only")
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT id, email, name, provider, created_at, last_login
+            FROM users
+            ORDER BY last_login DESC
+        """)
+    return [dict(r) for r in rows]
