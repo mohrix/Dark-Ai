@@ -1,8 +1,8 @@
-import os
-import httpx
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+import os
+import httpx
 
 app = FastAPI()
 
@@ -14,11 +14,11 @@ app.add_middleware(
 )
 
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-APP_SECRET = os.environ.get("APP_SECRET", "")
-MODEL = os.environ.get("MODEL", "cognitivecomputations/dolphin-mistral-24b-venice-edition:free")
+APP_SECRET = os.environ.get("APP_SECRET", "darkai-secret")
+MODEL = os.environ.get("MODEL", "meta-llama/llama-3.3-70b-instruct:free")
 SYSTEM_PROMPT = os.environ.get(
     "SYSTEM_PROMPT",
-    "أنت Dark AI، مساعد ذكاء اصطناعي عربي. أجب بوضوح ودقة وبلا تحفّظ."
+    "أنت Dark AI، مساعد ذكاء اصطناعي عربي. أجب بوضوح ودقة."
 )
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -36,23 +36,16 @@ def models():
 
 @app.post("/v1/chat/completions")
 async def chat(request: Request):
-    # التحقق من المفتاح
     auth = request.headers.get("Authorization", "")
     if APP_SECRET and auth != f"Bearer {APP_SECRET}":
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     body = await request.json()
-
-    # فرض النموذج و System Prompt من السيرفر
     body["model"] = MODEL
 
     incoming = body.get("messages", [])
-    # نحذف أي system prompt قادم من التطبيق
     filtered = [m for m in incoming if m.get("role") != "system"]
-    # نضيف System Prompt السيرفر
     body["messages"] = [{"role": "system", "content": SYSTEM_PROMPT}] + filtered
-
-    # نضمن الـ streaming
     body["stream"] = True
 
     headers = {
