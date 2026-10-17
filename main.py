@@ -19,10 +19,16 @@ app.add_middleware(
 # ===== ENV =====
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 APP_SECRET = os.environ.get("APP_SECRET", "darkai-2024-secret-key")
-MODEL = os.environ.get("MODEL", "poolside/laguna-s-2.1:free")
 SYSTEM_PROMPT = os.environ.get("SYSTEM_PROMPT", "أنت Dark AI، مساعد ذكاء اصطناعي عربي. أجب بوضوح ودقة.")
 BASE_URL = os.environ.get("BASE_URL", "https://web-production-cd4a4.up.railway.app")
 APP_DEEP_LINK = os.environ.get("APP_DEEP_LINK", "darkai://oauth")
+
+# قائمة النماذج (بالترتيب). إذا الأول مسدود (429)، ينتقل للثاني تلقائياً.
+MODELS_STR = os.environ.get(
+    "MODELS",
+    "poolside/laguna-s-2.1:free,nvidia/nemotron-3-ultra-550b-a55b:free,google/gemma-2-9b-it:free,meta-llama/llama-3.1-8b-instruct:free"
+)
+MODELS_LIST = [m.strip() for m in MODELS_STR.split(",") if m.strip()]
 
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
@@ -111,7 +117,7 @@ def root():
 
 @app.get("/v1/models")
 def models():
-    return {"object": "list", "data": [{"id": MODEL, "object": "model"}]}
+    return {"object": "list", "data": [{"id": m, "object": "model"} for m in MODELS_LIST]}
 
 @app.post("/v1/chat/completions")
 async def chat(request: Request):
@@ -123,15 +129,17 @@ async def chat(request: Request):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     body = await request.json()
-    body["model"] = MODEL
 
     incoming = body.get("messages", [])
     filtered = [m for m in incoming if m.get("role") != "system"]
     body["messages"] = [{"role": "system", "content": SYSTEM_PROMPT}] + filtered
     
-    # تفعيل التفكير (Reasoning)
+    # تفعيل التفكير
     body["reasoning"] = {"enabled": True}
     body["stream"] = True
+    
+    # استعمال "models" (بالجمع) بدل "model" باش نفعّل التوجيه التلقائي
+    body["models"] = MODELS_LIST
 
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
