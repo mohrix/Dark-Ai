@@ -23,10 +23,10 @@ SYSTEM_PROMPT = os.environ.get("SYSTEM_PROMPT", "أنت Dark AI، مساعد ذ�
 BASE_URL = os.environ.get("BASE_URL", "https://web-production-cd4a4.up.railway.app")
 APP_DEEP_LINK = os.environ.get("APP_DEEP_LINK", "darkai://oauth")
 
-# قائمة النماذج (بالترتيب). إذا الأول مسدود (429)، ينتقل للثاني تلقائياً.
+# 3 نماذج فقط (الحد الأقصى المسموح به في OpenRouter)
 MODELS_STR = os.environ.get(
     "MODELS",
-    "poolside/laguna-s-2.1:free,nvidia/nemotron-3-ultra-550b-a55b:free,google/gemma-2-9b-it:free,meta-llama/llama-3.1-8b-instruct:free"
+    "poolside/laguna-s-2.1:free,nvidia/nemotron-3-ultra-550b-a55b:free,google/gemma-2-9b-it:free"
 )
 MODELS_LIST = [m.strip() for m in MODELS_STR.split(",") if m.strip()]
 
@@ -138,7 +138,7 @@ async def chat(request: Request):
     body["reasoning"] = {"enabled": True}
     body["stream"] = True
     
-    # استعمال "models" (بالجمع) بدل "model" باش نفعّل التوجيه التلقائي
+    # استعمال "models" (بالجمع) للتوجيه التلقائي
     body["models"] = MODELS_LIST
 
     headers = {
