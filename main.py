@@ -1,4 +1,5 @@
 import os
+import json
 import httpx
 import secrets
 from fastapi import FastAPI, Request, HTTPException
@@ -18,7 +19,7 @@ app.add_middleware(
 # ===== ENV =====
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 APP_SECRET = os.environ.get("APP_SECRET", "darkai-2024-secret-key")
-MODEL = os.environ.get("MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free")
+MODEL = os.environ.get("MODEL", "poolside/laguna-s-2.1:free")
 SYSTEM_PROMPT = os.environ.get("SYSTEM_PROMPT", "أنت Dark AI، مساعد ذكاء اصطناعي عربي. أجب بوضوح ودقة.")
 BASE_URL = os.environ.get("BASE_URL", "https://web-production-cd4a4.up.railway.app")
 APP_DEEP_LINK = os.environ.get("APP_DEEP_LINK", "darkai://oauth")
@@ -30,6 +31,7 @@ GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "")
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
+# ===== DB Pool =====
 _pool = None
 
 async def get_pool():
@@ -61,6 +63,7 @@ async def startup():
             );
         """)
 
+# ===== Helpers =====
 async def verify_token(token: str):
     if not token:
         return None
@@ -101,6 +104,7 @@ async def create_session(user_id):
         )
     return token
 
+# ===== Routes =====
 @app.get("/")
 def root():
     return {"status": "ok", "service": "Dark AI Proxy"}
@@ -125,7 +129,7 @@ async def chat(request: Request):
     filtered = [m for m in incoming if m.get("role") != "system"]
     body["messages"] = [{"role": "system", "content": SYSTEM_PROMPT}] + filtered
     
-    # تفعيل التفكير
+    # تفعيل التفكير (Reasoning)
     body["reasoning"] = {"enabled": True}
     body["stream"] = True
 
@@ -146,11 +150,14 @@ async def chat(request: Request):
             ) as resp:
                 if resp.status_code != 200:
                     err_body = await resp.aread()
-                    print(f"[OPENROUTER ERROR] {err_body.decode()[:500]}")
-                    err_line = 'data: {"error": "HTTP ' + str(resp.status_code) + '"}\n\n'
-                    yield err_line.encode()
+                    err_text = err_body.decode('utf-8', errors='ignore')[:500]
+                    print(f"[OPENROUTER ERROR] {err_text}")
+                    
+                    error_payload = json.dumps({"error": f"HTTP {resp.status_code} - {err_text}"})
+                    yield f"data: {error_payload}\n\n".encode()
                     yield b"data: [DONE]\n\n"
                     return
+                
                 async for chunk in resp.aiter_bytes():
                     yield chunk
 
