@@ -18,7 +18,7 @@ app.add_middleware(
 # ===== ENV =====
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 APP_SECRET = os.environ.get("APP_SECRET", "darkai-2024-secret-key")
-MODEL = os.environ.get("MODEL", "meta-llama/llama-3.3-70b-instruct:free")
+MODEL = os.environ.get("MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free")
 SYSTEM_PROMPT = os.environ.get("SYSTEM_PROMPT", "أنت Dark AI، مساعد ذكاء اصطناعي عربي. أجب بوضوح ودقة.")
 BASE_URL = os.environ.get("BASE_URL", "https://web-production-cd4a4.up.railway.app")
 APP_DEEP_LINK = os.environ.get("APP_DEEP_LINK", "darkai://oauth")
@@ -30,16 +30,13 @@ GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "")
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
-# ===== DB Pool =====
 _pool = None
-
 
 async def get_pool():
     global _pool
     if _pool is None:
         _pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
     return _pool
-
 
 @app.on_event("startup")
 async def startup():
@@ -64,8 +61,6 @@ async def startup():
             );
         """)
 
-
-# ===== Helpers =====
 async def verify_token(token: str):
     if not token:
         return None
@@ -83,7 +78,6 @@ async def verify_token(token: str):
         pass
     return None
 
-
 async def upsert_user(user_id, email, name, picture, provider):
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -97,7 +91,6 @@ async def upsert_user(user_id, email, name, picture, provider):
                 last_login = NOW()
         """, user_id, email, name, picture, provider)
 
-
 async def create_session(user_id):
     token = secrets.token_urlsafe(32)
     pool = await get_pool()
@@ -108,17 +101,13 @@ async def create_session(user_id):
         )
     return token
 
-
-# ===== Routes =====
 @app.get("/")
 def root():
     return {"status": "ok", "service": "Dark AI Proxy"}
 
-
 @app.get("/v1/models")
 def models():
     return {"object": "list", "data": [{"id": MODEL, "object": "model"}]}
-
 
 @app.post("/v1/chat/completions")
 async def chat(request: Request):
@@ -135,6 +124,9 @@ async def chat(request: Request):
     incoming = body.get("messages", [])
     filtered = [m for m in incoming if m.get("role") != "system"]
     body["messages"] = [{"role": "system", "content": SYSTEM_PROMPT}] + filtered
+    
+    # تفعيل التفكير
+    body["reasoning"] = {"enabled": True}
     body["stream"] = True
 
     headers = {
@@ -152,10 +144,9 @@ async def chat(request: Request):
                 json=body,
                 headers=headers,
             ) as resp:
-                print(f"[OPENROUTER] status={resp.status_code}")
                 if resp.status_code != 200:
-                    error_body = await resp.aread()
-                    print(f"[OPENROUTER ERROR] {error_body.decode('utf-8', errors='ignore')[:500]}")
+                    err_body = await resp.aread()
+                    print(f"[OPENROUTER ERROR] {err_body.decode()[:500]}")
                     err_line = 'data: {"error": "HTTP ' + str(resp.status_code) + '"}\n\n'
                     yield err_line.encode()
                     yield b"data: [DONE]\n\n"
@@ -164,7 +155,6 @@ async def chat(request: Request):
                     yield chunk
 
     return StreamingResponse(stream_response(), media_type="text/event-stream")
-
 
 # ===== OAuth =====
 @app.get("/auth/google")
@@ -182,7 +172,6 @@ def auth_google():
     )
     return RedirectResponse(url)
 
-
 @app.get("/auth/github")
 def auth_github():
     if not GITHUB_CLIENT_ID:
@@ -196,7 +185,6 @@ def auth_github():
     )
     return RedirectResponse(url)
 
-
 @app.get("/auth/callback/{provider}")
 async def auth_callback(provider: str, code: str):
     if provider == "google":
@@ -204,7 +192,6 @@ async def auth_callback(provider: str, code: str):
     if provider == "github":
         return await github_callback(code)
     raise HTTPException(400, "Unknown provider")
-
 
 async def google_callback(code: str):
     redirect_uri = f"{BASE_URL}/auth/callback/google"
@@ -223,7 +210,6 @@ async def google_callback(code: str):
         access_token = tokens.get("access_token")
         if not access_token:
             return RedirectResponse(f"{APP_DEEP_LINK}?error=token_exchange_failed")
-
         user_resp = await client.get(
             "https://www.googleapis.com/oauth2/v2/userinfo",
             headers={"Authorization": f"Bearer {access_token}"},
@@ -231,15 +217,9 @@ async def google_callback(code: str):
         user = user_resp.json()
 
     user_id = f"google:{user.get('id')}"
-    email = user.get("email")
-    name = user.get("name")
-    picture = user.get("picture")
-
-    await upsert_user(user_id, email, name, picture, "google")
+    await upsert_user(user_id, user.get("email"), user.get("name"), user.get("picture"), "google")
     session_token = await create_session(user_id)
-
     return RedirectResponse(f"{APP_DEEP_LINK}?token={session_token}")
-
 
 async def github_callback(code: str):
     async with httpx.AsyncClient() as client:
@@ -256,13 +236,11 @@ async def github_callback(code: str):
         access_token = tokens.get("access_token")
         if not access_token:
             return RedirectResponse(f"{APP_DEEP_LINK}?error=token_exchange_failed")
-
         user_resp = await client.get(
             "https://api.github.com/user",
             headers={"Authorization": f"Bearer {access_token}"},
         )
         user = user_resp.json()
-
         email = user.get("email")
         if not email:
             emails_resp = await client.get(
@@ -275,43 +253,23 @@ async def github_callback(code: str):
                 email = primary.get("email") if primary else None
 
     user_id = f"github:{user.get('id')}"
-    name = user.get("name") or user.get("login")
-    picture = user.get("avatar_url")
-
-    await upsert_user(user_id, email, name, picture, "github")
+    await upsert_user(user_id, email, user.get("name") or user.get("login"), user.get("avatar_url"), "github")
     session_token = await create_session(user_id)
-
     return RedirectResponse(f"{APP_DEEP_LINK}?token={session_token}")
-
 
 @app.get("/auth/me")
 async def auth_me(request: Request):
     auth = request.headers.get("Authorization", "")
     token = auth.replace("Bearer ", "")
-
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow("""
-            SELECT u.id, u.email, u.name, u.picture, u.provider,
-                   u.created_at, u.last_login
-            FROM users u
-            JOIN sessions s ON s.user_id = u.id
-            WHERE s.token = $1
+            SELECT u.id, u.email, u.name, u.picture, u.provider, u.created_at, u.last_login
+            FROM users u JOIN sessions s ON s.user_id = u.id WHERE s.token = $1
         """, token)
-
     if not row:
         raise HTTPException(401, "Invalid session")
-
-    return {
-        "id": row["id"],
-        "email": row["email"],
-        "name": row["name"],
-        "picture": row["picture"],
-        "provider": row["provider"],
-        "created_at": str(row["created_at"]),
-        "last_login": str(row["last_login"]),
-    }
-
+    return dict(row)
 
 @app.get("/auth/users")
 async def list_users(request: Request):
@@ -319,12 +277,7 @@ async def list_users(request: Request):
     token = auth.replace("Bearer ", "")
     if token != APP_SECRET:
         raise HTTPException(403, "Admin only")
-
     pool = await get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT id, email, name, provider, created_at, last_login
-            FROM users
-            ORDER BY last_login DESC
-        """)
+        rows = await conn.fetch("SELECT id, email, name, provider, created_at, last_login FROM users ORDER BY last_login DESC")
     return [dict(r) for r in rows]
