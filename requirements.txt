@@ -1,4 +1,7 @@
 fastapi
 uvicorn
-httpx
 asyncpg
+httpx
+passlib[bcrypt]
+python-multipart
+pydantic
